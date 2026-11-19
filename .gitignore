@@ -1,0 +1,43 @@
+node_modules/
+.next/
+dist/
+out/
+build/
+.turbo/
+*.tsbuildinfo
+next-env.d.ts
+
+# env
+.env
+.env*.local
+.env.example
+
+# db
+*.db
+*.db-journal
+packages/db/prisma/*.db
+
+# logs
+*.log
+npm-debug.log*
+pnpm-debug.log*
+
+# os
+.DS_Store
+Thumbs.db
+
+# editor
+.vscode/*
+!.vscode/extensions.json
+.idea/
+
+# testing
+coverage/
+playwright-report/
+test-results/
+
+# docker
+.docker/
+
+# reference repos (study only, not part of Emailo)
+reference/

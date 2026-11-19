@@ -1,0 +1,27 @@
+{
+  "name": "emailo",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Emailo - AI-enabled email management SaaS (inspired by inbox-zero and velo)",
+  "license": "MIT",
+  "packageManager": "pnpm@9.15.4",
+  "engines": {
+    "node": ">=20.11.0"
+  },
+  "scripts": {
+    "dev": "turbo run dev",
+    "build": "turbo run build",
+    "lint": "turbo run lint",
+    "typecheck": "turbo run typecheck",
+    "db:generate": "pnpm --filter @emailo/db generate",
+    "db:migrate": "pnpm --filter @emailo/db migrate:deploy",
+    "db:migrate:dev": "pnpm --filter @emailo/db migrate:dev",
+    "db:studio": "pnpm --filter @emailo/db studio",
+    "db:seed": "pnpm --filter @emailo/db seed",
+    "worker": "pnpm --filter @emailo/worker dev"
+  },
+  "devDependencies": {
+    "turbo": "^2.3.3",
+    "typescript": "^5.7.2"
+  }
+}

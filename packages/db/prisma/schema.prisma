@@ -1,0 +1,461 @@
+// Emailo - Prisma schema
+// AI-enabled email management SaaS. PostgreSQL (prod) / SQLite-compatible core.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+// ----------------------------------------------------------------------------
+// Identity & accounts
+// ----------------------------------------------------------------------------
+
+model User {
+  id            String    @id @default(cuid())
+  email         String    @unique
+  name          String?
+  image         String?
+  emailVerified DateTime?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  accounts      EmailAccount[]
+  aiSettings    AiSettings?
+  usage         UsageRecord[]
+  apiKeys       ApiKey[]
+  notifications NotificationSetting?
+  feedback      Feedback[]
+
+  @@map("users")
+}
+
+// One mailbox the user has connected (Google / Microsoft / IMAP).
+model EmailAccount {
+  id        String  @id @default(cuid())
+  userId    String
+  email     String
+  name      String?
+
+  // Provider connection
+  provider      String  @default("google") // google | microsoft | imap
+  // Encrypted OAuth tokens (AES-256-GCM). JSON blob.
+  accessToken   String? @db.Text
+  refreshToken  String? @db.Text
+  tokenExpiresAt DateTime?
+  // IMAP/SMTP settings (encrypted password)
+  imapHost     String?
+  imapPort     Int?
+  smtpHost     String?
+  smtpPort     Int?
+  smtpUser     String?
+  imapPasswordEnc String? @db.Text
+  authMethod   String? // oauth2 | password
+  scopes       String? @db.Text
+
+  isConnected Boolean @default(true)
+  lastSyncedAt DateTime?
+  syncCursor   String? @db.Text // provider history id / UIDVALIDITY cursor
+  syncState    Json?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user      User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  threads   Thread[]
+  labels    Label[]
+  rules     EmailRule[]
+  bundles   NewsletterBundle[]
+  filters   FilterRule[]
+
+  @@unique([userId, email])
+  @@index([userId])
+  @@map("email_accounts")
+}
+
+// ----------------------------------------------------------------------------
+// Mail data
+// ----------------------------------------------------------------------------
+
+model Thread {
+  id        String  @id @default(cuid())
+  accountId String
+  // Provider thread id (Gmail threadId / IMAP thread hash)
+  providerThreadId String?
+
+  subject    String
+  snippet    String    @default("") @db.Text
+  category   String    @default("primary") // primary|updates|promotions|social|newsletters|cold
+  status     String    @default("inbox")   // inbox|archived|snoozed|sent|draft
+
+  isRead      Boolean @default(false)
+  isStarred   Boolean @default(false)
+  isPinned    Boolean @default(false)
+  isMuted     Boolean @default(false)
+  isSpam      Boolean @default(false)
+  hasAttachment Boolean @default(false)
+
+  // Denormalized participant list (email addresses) for fast display/filter.
+  participantEmails String[] @default([])
+  participantNames  String[] @default([])
+
+  lastMessageAt DateTime
+  snoozedUntil  DateTime?
+  messageCount  Int       @default(1)
+
+  // AI
+  aiSummary     Json?
+  aiCategorizedAt DateTime?
+
+  // Reply tracking (Reply Zero)
+  needsReply     Boolean @default(false)
+  awaitingReply  Boolean @default(false)
+  lastRepliedAt  DateTime?
+
+  // Follow-up reminder
+  followUpAt    DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  account    EmailAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  messages   Message[]
+  labels     ThreadLabel[]
+  aiDrafts   AiDraft[]
+  tasks      Task[]
+  bundleEntries BundleEntry[]
+
+  @@index([accountId, status])
+  @@index([accountId, category])
+  @@index([accountId, lastMessageAt])
+  @@index([accountId, needsReply])
+  @@map("threads")
+}
+
+model Message {
+  id       String @id @default(cuid())
+  threadId String
+  // Provider message id
+  providerMessageId String?
+
+  direction String // inbound | outbound
+  fromEmail String
+  fromName  String?
+  toEmails  String[] @default([])
+  ccEmails  String[] @default([])
+  bccEmails String[] @default([])
+  replyTo   String?
+
+  subject   String
+  bodyText  String? @db.Text
+  bodyHtml  String? @db.Text
+  snippet   String  @default("") @db.Text
+
+  isRead     Boolean @default(false)
+  isStarred  Boolean @default(false)
+  hasAttachment Boolean @default(false)
+
+  // Raw provider payload (JSON) for re-processing / re-sync.
+  raw        Json?
+  // Parsed SPF/DKIM/DMARC
+  authResults Json?
+  // Phishing risk (0-100)
+  phishingScore Int?
+
+  sentAt    DateTime
+  createdAt DateTime @default(now())
+
+  thread      Thread       @relation(fields: [threadId], references: [id], onDelete: Cascade)
+  attachments Attachment[]
+
+  @@index([threadId])
+  @@index([providerMessageId])
+  @@map("messages")
+}
+
+model Attachment {
+  id        String  @id @default(cuid())
+  messageId String
+  filename  String
+  mimeType  String
+  size      Int
+  contentId String?
+  // Where the bytes live: "provider" | "storage" (S3/local)
+  storage   String  @default("provider")
+  storageKey String? @db.Text
+
+  createdAt DateTime @default(now())
+
+  message Message @relation(fields: [messageId], references: [id], onDelete: Cascade)
+
+  @@index([messageId])
+  @@map("attachments")
+}
+
+model Label {
+  id        String  @id @default(cuid())
+  accountId String
+  name      String
+  color     String?
+  // Provider label/folder id
+  providerLabelId String?
+  // For IMAP: folder path + special-use flag
+  imapFolderPath  String?
+  imapSpecialUse  String?
+
+  createdAt DateTime @default(now())
+
+  account EmailAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  threads ThreadLabel[]
+
+  @@unique([accountId, name])
+  @@index([accountId])
+  @@map("labels")
+}
+
+model ThreadLabel {
+  threadId String
+  labelId  String
+
+  thread Thread @relation(fields: [threadId], references: [id], onDelete: Cascade)
+  label  Label  @relation(fields: [labelId], references: [id], onDelete: Cascade)
+
+  @@id([threadId, labelId])
+  @@map("thread_labels")
+}
+
+// ----------------------------------------------------------------------------
+// AI
+// ----------------------------------------------------------------------------
+
+model AiSettings {
+  id     String @id @default(cuid())
+  userId String @unique
+
+  provider String @default("openai") // openai | anthropic | google
+  model    String @default("gpt-4o-mini")
+  // Encrypted API key (AES-256-GCM). Falls back to env var if null.
+  apiKeyEnc String? @db.Text
+
+  autoCategorize        Boolean @default(true)
+  autoDraftReplies      Boolean @default(false)
+  autoArchiveColdEmails Boolean @default(false)
+  autoSummarize         Boolean @default(true)
+
+  // Feature toggles: summarize, reply, compose, categorize, ask, rules
+  features Json @default("{}")
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("ai_settings")
+}
+
+model AiDraft {
+  id       String  @id @default(cuid())
+  threadId String?
+  kind     String  @default("reply") // reply | compose | cold_email
+  prompt   String  @db.Text
+  content  String  @db.Text
+  model    String
+
+  createdAt DateTime @default(now())
+
+  thread Thread? @relation(fields: [threadId], references: [id], onDelete: Cascade)
+
+  @@index([threadId])
+  @@map("ai_drafts")
+}
+
+model AiCache {
+  id        String   @id @default(cuid())
+  // Hash of (feature + model + input) for deterministic reuse
+  cacheKey  String   @unique
+  feature   String
+  output    Json
+  createdAt DateTime @default(now())
+
+  @@index([feature])
+  @@map("ai_cache")
+}
+
+// ----------------------------------------------------------------------------
+// Automation: AI rules + deterministic filters
+// ----------------------------------------------------------------------------
+
+model EmailRule {
+  id        String  @id @default(cuid())
+  accountId String
+  name      String
+  enabled   Boolean @default(true)
+
+  // Natural-language instruction for the AI rule engine.
+  instructions String @db.Text
+  matchFrom    String?
+  matchSubjectContains String?
+  matchBodyContains    String?
+
+  // JSON RuleAction[]
+  actions Json
+  priority Int @default(0)
+
+  lastRunAt DateTime?
+  hitCount  Int     @default(0)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  account EmailAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  @@index([accountId, enabled])
+  @@map("email_rules")
+}
+
+model FilterRule {
+  id        String  @id @default(cuid())
+  accountId String
+  name      String
+  enabled   Boolean @default(true)
+  // Deterministic criteria (AND logic), case-insensitive substring.
+  criteria  Json
+  // Actions: archive, trash, star, mark_read, label
+  actions   Json
+  priority  Int     @default(0)
+  hitCount  Int     @default(0)
+
+  account EmailAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  @@index([accountId, enabled])
+  @@map("filter_rules")
+}
+
+// ----------------------------------------------------------------------------
+// Bundles, tasks, usage, misc
+// ----------------------------------------------------------------------------
+
+model NewsletterBundle {
+  id        String  @id @default(cuid())
+  accountId String
+  name      String
+  // Which senders/threads to include (JSON criteria)
+  criteria  Json
+  // Delivery schedule cron-ish string, e.g. "0 8 * * *"
+  schedule  String  @default("0 8 * * *")
+  lastBundledAt DateTime?
+  enabled   Boolean @default(true)
+
+  account EmailAccount  @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  entries BundleEntry[]
+
+  createdAt DateTime @default(now())
+
+  @@index([accountId])
+  @@map("newsletter_bundles")
+}
+
+model BundleEntry {
+  id       String @id @default(cuid())
+  bundleId String
+  threadId String
+  sentAt   DateTime @default(now())
+
+  bundle NewsletterBundle @relation(fields: [bundleId], references: [id], onDelete: Cascade)
+  thread Thread           @relation(fields: [threadId], references: [id], onDelete: Cascade)
+
+  @@unique([bundleId, threadId])
+  @@map("bundle_entries")
+}
+
+model Task {
+  id       String  @id @default(cuid())
+  threadId String?
+  title    String
+  notes    String? @db.Text
+  done     Boolean @default(false)
+  dueAt    DateTime?
+  priority String  @default("none") // none | low | medium | high
+
+  thread Thread? @relation(fields: [threadId], references: [id], onDelete: SetNull)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([threadId])
+  @@map("tasks")
+}
+
+model UsageRecord {
+  id        String   @id @default(cuid())
+  userId    String
+  feature   String   // ai_tokens, emails_processed, rules_run
+  amount    Int
+  // Metadata: model, provider, cost estimate
+  meta      Json?
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
+  @@map("usage_records")
+}
+
+model ApiKey {
+  id        String   @id @default(cuid())
+  userId    String
+  name      String
+  // Only the hash is stored; the plaintext is shown once at creation.
+  keyHash   String   @unique
+  prefix    String   // first 8 chars for display
+  lastUsedAt DateTime?
+  revoked   Boolean  @default(false)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+  @@map("api_keys")
+}
+
+model NotificationSetting {
+  id        String  @id @default(cuid())
+  userId    String  @unique
+  desktop   Boolean @default(true)
+  email     Boolean @default(false)
+  vipOnly   Boolean @default(false)
+  // VIP senders
+  vipSenders String[] @default([])
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("notification_settings")
+}
+
+model Feedback {
+  id        String   @id @default(cuid())
+  userId    String
+  message   String   @db.Text
+  rating    Int?
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("feedback")
+}
+
+// Simple key/value settings store per account (theme, density, etc.)
+model AccountSetting {
+  id        String @id @default(cuid())
+  accountId String
+  key       String
+  value     String @db.Text
+
+  @@unique([accountId, key])
+  @@map("account_settings")
+}
